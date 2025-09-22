@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 
 type THash = [u8; 32];
 type TTimestamp = u64;
@@ -63,6 +64,19 @@ impl Blockchain {
     }
 }
 
+// BlockError enum: Validation ke liye custom errors.
+#[derive(Error, Debug)]
+pub enum BlockError {
+    #[error("Block is an orphan: prev_hash doesn't match previous block")]
+    OrphanBlock,
+    #[error("Invalid hash: doesn't match computed body hash")]
+    InvalidHash,
+    #[error("Invalid timestamp: must be after previous")]
+    InvalidTimestamp,
+}
+
+// Helper: Result type alias for clean code.
+pub type Result<T> = std::result::Result<T, BlockError>;
 fn main() {
     let chain = Blockchain::new();
     let json_str = serialize_chain(&chain);
