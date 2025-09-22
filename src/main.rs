@@ -150,13 +150,54 @@ impl Blockchain {
         }
         Ok(())
     }
+
+    fn add_block(&mut self, data: Vec<u8>, difficulty: u32) -> Result<()> {
+        if self.blocks.is_empty() {
+            return Err(BlockError::OrphanBlock); // No genesis, can't add.
+        }
+
+        let last_hash = self.blocks.last().unwrap().hash;
+        let mut timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Ensure timestamp is after previous block
+        let prev_timestamp = self.blocks.last().unwrap().timestamp;
+        if timestamp <= prev_timestamp {
+            timestamp = prev_timestamp + 1;
+        }
+
+        let mut new_block = Block {
+            prev_hash: last_hash,
+            timestamp,
+            data,
+            nonce: 0,
+            hash: [0u8; 32],
+        };
+
+        // Mine AFTER setting the correct timestamp
+        new_block.mine(difficulty).unwrap();
+        
+        self.blocks.push(new_block);
+
+        self.validate().unwrap();
+        Ok(())
+    }
 }
 
 fn main() {
-    let chain = Blockchain::new();
+    let mut chain = Blockchain::new();
 
-    println!("Chain valid? {:?}", chain.validate()); // Should Ok(()).
+    println!("Initial chain valid? {:?}", chain.validate());
 
-    let mut bad_block = chain.blocks[0].clone();
-    println!("Bad block valid? {:?}", bad_block.validate());
+    // Naya block add: Data, difficulty.
+    let new_data = b"Second Block: Hello from Veerbal!".to_vec();
+    if let Err(e) = chain.add_block(new_data, 1) {
+        println!("Add failed: {}", e);
+    } else {
+        println!("Added block! New len: {}", chain.blocks.len()); // Should 2.
+        println!("Full chain valid? {:?}", chain.validate());
+        println!("Last block hash: {:?}", &chain.blocks[1].hash[0..4]); // Zeros.
+    }
 }
