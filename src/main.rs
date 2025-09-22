@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -20,10 +19,6 @@ fn hash_block(block: &mut Block) {
 
     let result = hasher.finalize();
     block.hash = result.into();
-}
-
-fn serialize_chain(chain: &Blockchain) -> String {
-    serde_json::to_string_pretty(chain).unwrap()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -114,15 +109,54 @@ impl Mineable for Block {
     }
 }
 
+impl Block {
+    fn validate(&self) -> Result<()> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.prev_hash);
+        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(&self.data);
+        hasher.update(&self.nonce.to_le_bytes());
+
+        let computed: THash = hasher.finalize().into();
+        if computed != self.hash {
+            return Err(BlockError::InvalidHash);
+        }
+        Ok(())
+    }
+}
+
+impl Blockchain {
+    fn validate(&self) -> Result<()> {
+        if self.blocks.is_empty() {
+            return Ok(()); // Empty chain ok.
+        }
+
+        // Genesis check.
+        if self.blocks[0].prev_hash != [0u8; 32] {
+            return Err(BlockError::OrphanBlock);
+        }
+        self.blocks[0].validate()?;
+
+        // Baaki blocks: Prev hash, timestamp, self-validate.
+        for i in 1..self.blocks.len() {
+            let block = &self.blocks[i];
+            if block.prev_hash != self.blocks[i - 1].hash {
+                return Err(BlockError::OrphanBlock);
+            }
+            if block.timestamp <= self.blocks[i - 1].timestamp {
+                return Err(BlockError::InvalidTimestamp);
+            }
+            block.validate()?;
+        }
+        Ok(())
+    }
+}
+
 fn main() {
     let chain = Blockchain::new();
-    let mut test_block = chain.blocks[0].clone(); // Genesis copy.
-    test_block.mine(1); // Difficulty 1—easy, nonce badlega.
-    println!("Mined nonce: {}", test_block.nonce); // Should >0.
-    println!(
-        "Mined hash starts with low value: {:?}",
-        &test_block.hash[0..4]
-    ); // Leading low bytes.
 
-    println!("{:?}", test_block);
+    println!("Chain valid? {:?}", chain.validate()); // Should Ok(()).
+
+    let mut bad_block = chain.blocks[0].clone();
+    println!("Bad block valid? {:?}", bad_block.validate());
 }
