@@ -26,7 +26,7 @@ fn serialize_chain(chain: &Blockchain) -> String {
     serde_json::to_string_pretty(chain).unwrap()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct Block {
     prev_hash: THash,      // Previous Block Hash
     timestamp: TTimestamp, // Current time in seconds.
@@ -77,11 +77,52 @@ pub enum BlockError {
 
 // Helper: Result type alias for clean code.
 pub type Result<T> = std::result::Result<T, BlockError>;
+
+pub trait Mineable {
+    fn mine(&mut self, difficulty: u32) -> Result<()>;
+}
+
+impl Mineable for Block {
+    fn mine(&mut self, difficulty: u32) -> Result<()> {
+        if difficulty == 0 || difficulty > 4 {
+            return Err(BlockError::InvalidHash);
+        }
+
+        let mut nonce = 0u64;
+
+        loop {
+            self.nonce = nonce;
+            hash_block(self);
+
+            let mut is_valid = true;
+            for i in 0..difficulty as usize {
+                if self.hash[i] != 0 {
+                    is_valid = false;
+                    break;
+                }
+            }
+            if is_valid {
+                return Ok(());
+            }
+
+            nonce += 1;
+
+            if nonce > 1_000_000 {
+                return Err(BlockError::InvalidHash);
+            }
+        }
+    }
+}
+
 fn main() {
     let chain = Blockchain::new();
-    let json_str = serialize_chain(&chain);
-    println!("Chain as JSON:\n{}", json_str);
+    let mut test_block = chain.blocks[0].clone(); // Genesis copy.
+    test_block.mine(1); // Difficulty 1—easy, nonce badlega.
+    println!("Mined nonce: {}", test_block.nonce); // Should >0.
+    println!(
+        "Mined hash starts with low value: {:?}",
+        &test_block.hash[0..4]
+    ); // Leading low bytes.
 
-    let deserialized: Blockchain = serde_json::from_str(&json_str).unwrap();
-    println!("Deserialized len: {:?}", deserialized.blocks);
+    println!("{:?}", test_block);
 }
