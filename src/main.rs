@@ -1,3 +1,5 @@
+use ring::rand::SystemRandom;
+use ring::signature::{self, Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,6 +9,77 @@ type THash = [u8; 32];
 type TTimestamp = u64;
 type TData = Vec<u8>;
 type TNonce = u64;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Transaction {
+    Coinbase {
+        to: String,
+        amount: u64,
+    },
+    Transfer {
+        from: String,
+        to: String,
+        amount: u64,
+        signature: Vec<u8>,
+    },
+}
+
+fn sign_tx(tx: &Transaction, keypair: &Ed25519KeyPair) -> Vec<u8> {
+    // Create a transaction without signature for signing
+    let tx_for_signing = match tx {
+        Transaction::Coinbase { to, amount } => {
+            // Coinbase transactions don't need signing
+            Transaction::Coinbase {
+                to: to.clone(),
+                amount: *amount,
+            }
+        }
+        Transaction::Transfer {
+            from, to, amount, ..
+        } => {
+            // Sign only the core data: from, to, amount
+            // Exclude the signature field to avoid circular dependency
+            Transaction::Transfer {
+                from: from.clone(),
+                to: to.clone(),
+                amount: *amount,
+                signature: Vec::new(), // Empty signature for signing
+            }
+        }
+    };
+
+    let tx_bytes = bincode::serialize(&tx_for_signing).unwrap();
+    let sig = keypair.sign(&tx_bytes);
+    sig.as_ref().to_vec()
+}
+
+fn verify_tx(tx: &Transaction, pub_key: &[u8; 32]) -> bool {
+    match tx {
+        Transaction::Coinbase { .. } => true, // Coinbase doesn't need verification
+        Transaction::Transfer {
+            from,
+            to,
+            amount,
+            signature,
+        } => {
+            // Recreate the transaction data as it was signed (without signature)
+            let tx_for_verification = Transaction::Transfer {
+                from: from.clone(),
+                to: to.clone(),
+                amount: *amount,
+                signature: Vec::new(),
+            };
+
+            // Serialize to bytes (same as during signing)
+            let tx_bytes = bincode::serialize(&tx_for_verification).unwrap();
+
+            // Verify the signature using the public key
+            let public_key =
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pub_key);
+            public_key.verify(&tx_bytes, signature).is_ok()
+        }
+    }
+}
 
 fn hash_block(block: &mut Block) {
     let mut hasher = Sha256::new();
@@ -178,7 +251,7 @@ impl Blockchain {
 
         // Mine AFTER setting the correct timestamp
         new_block.mine(difficulty).unwrap();
-        
+
         self.blocks.push(new_block);
 
         self.validate().unwrap();
@@ -200,4 +273,57 @@ fn main() {
         println!("Full chain valid? {:?}", chain.validate());
         println!("Last block hash: {:?}", &chain.blocks[1].hash[0..4]); // Zeros.
     }
+
+    // Testing / Signature verification
+    let rng = SystemRandom::new();
+    let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+    let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+    let pk = keypair.public_key().as_ref();
+
+    let coinbase = Transaction::Coinbase {
+        to: "veebal".to_string(),
+        amount: 50,
+    };
+    println!("Coinbase: {:?}", coinbase);
+
+    // Create transfer transaction data (without signature)
+    let transfer_data = Transaction::Transfer {
+        from: "sender".to_string(),
+        to: "receiver".to_string(),
+        amount: 10,
+        signature: Vec::new(), // Empty signature for signing
+    };
+
+    // Sign the transaction data
+    let signature = sign_tx(&transfer_data, &keypair);
+
+    // Create final signed transaction
+    let transfer = Transaction::Transfer {
+        from: "sender".to_string(),
+        to: "receiver".to_string(),
+        amount: 10,
+        signature,
+    };
+    let pk_array: &[u8; 32] = pk.try_into().unwrap();
+    println!("Transfer valid? {}", verify_tx(&transfer, pk_array));
+
+    // New transfer
+    let new_transfer_data = Transaction::Transfer {
+        from: "sender".to_string(),
+        to: "receiver".to_string(),
+        amount: 20,
+        signature: Vec::new(),
+    };
+
+    let signature = sign_tx(&new_transfer_data, &keypair);
+
+    let new_transfer = Transaction::Transfer {
+        from: "sender".to_string(),
+        to: "receiver".to_string(),
+        amount: 20,
+        signature,
+    };
+
+    let pk_array: &[u8; 32] = pk.try_into().unwrap();
+    println!("Transfer valid? {}", verify_tx(&new_transfer, pk_array));
 }
