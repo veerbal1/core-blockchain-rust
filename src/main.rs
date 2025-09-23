@@ -1,5 +1,5 @@
 use ring::rand::SystemRandom;
-use ring::signature::{self, Ed25519KeyPair, KeyPair};
+use ring::signature::{Ed25519KeyPair};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,10 +7,10 @@ use thiserror::Error;
 
 type THash = [u8; 32];
 type TTimestamp = u64;
-type TData = Vec<u8>;
+type TData = Vec<Transaction>;
 type TNonce = u64;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Transaction {
     Coinbase {
         to: String,
@@ -53,7 +53,7 @@ fn sign_tx(tx: &Transaction, keypair: &Ed25519KeyPair) -> Vec<u8> {
     sig.as_ref().to_vec()
 }
 
-fn verify_tx(tx: &Transaction, pub_key: &[u8; 32]) -> bool {
+pub fn verify_tx(tx: &Transaction, pub_key: &[u8; 32]) -> bool {
     match tx {
         Transaction::Coinbase { .. } => true, // Coinbase doesn't need verification
         Transaction::Transfer {
@@ -87,7 +87,7 @@ fn hash_block(block: &mut Block) {
     // Fields ko bytes mai serialize
     hasher.update(&block.prev_hash);
     hasher.update(&block.timestamp.to_le_bytes());
-    hasher.update(&block.data);
+    hasher.update(bincode::serialize(&block.data).unwrap());
     hasher.update(&block.nonce.to_le_bytes());
 
     let result = hasher.finalize();
@@ -111,7 +111,10 @@ struct Blockchain {
 impl Blockchain {
     fn new() -> Self {
         let mut chain = Blockchain { blocks: Vec::new() };
-        let genesis_data = String::from("Genesis Block");
+        let genesis_data = Transaction::Coinbase {
+            to: "genesis_miner".to_string(),
+            amount: 100,
+        };
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -120,7 +123,7 @@ impl Blockchain {
         let mut genesis_block = Block {
             prev_hash: [0u8; 32],
             timestamp,
-            data: genesis_data.into_bytes(),
+            data: vec![genesis_data],
             nonce: 0,
             hash: [0u8; 32],
         };
@@ -187,7 +190,7 @@ impl Block {
         let mut hasher = Sha256::new();
         hasher.update(&self.prev_hash);
         hasher.update(&self.timestamp.to_le_bytes());
-        hasher.update(&self.data);
+        hasher.update(bincode::serialize(&self.data).unwrap());
         hasher.update(&self.nonce.to_le_bytes());
 
         let computed: THash = hasher.finalize().into();
@@ -224,7 +227,7 @@ impl Blockchain {
         Ok(())
     }
 
-    fn add_block(&mut self, data: Vec<u8>, difficulty: u32) -> Result<()> {
+    fn add_block(&mut self, data: TData, difficulty: u32) -> Result<()> {
         if self.blocks.is_empty() {
             return Err(BlockError::OrphanBlock); // No genesis, can't add.
         }
@@ -261,69 +264,34 @@ impl Blockchain {
 
 fn main() {
     let mut chain = Blockchain::new();
-
     println!("Initial chain valid? {:?}", chain.validate());
 
-    // Naya block add: Data, difficulty.
-    let new_data = b"Second Block: Hello from Veerbal!".to_vec();
-    if let Err(e) = chain.add_block(new_data, 1) {
-        println!("Add failed: {}", e);
-    } else {
-        println!("Added block! New len: {}", chain.blocks.len()); // Should 2.
-        println!("Full chain valid? {:?}", chain.validate());
-        println!("Last block hash: {:?}", &chain.blocks[1].hash[0..4]); // Zeros.
-    }
-
-    // Testing / Signature verification
     let rng = SystemRandom::new();
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
     let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-    let pk = keypair.public_key().as_ref();
+    // let pk: [u8; 32] = keypair.public_key().as_ref().try_into().unwrap();
 
-    let coinbase = Transaction::Coinbase {
-        to: "veebal".to_string(),
-        amount: 50,
-    };
-    println!("Coinbase: {:?}", coinbase);
-
-    // Create transfer transaction data (without signature)
     let transfer_data = Transaction::Transfer {
         from: "sender".to_string(),
         to: "receiver".to_string(),
         amount: 10,
-        signature: Vec::new(), // Empty signature for signing
+        signature: Vec::new(),
     };
-
-    // Sign the transaction data
     let signature = sign_tx(&transfer_data, &keypair);
-
-    // Create final signed transaction
     let transfer = Transaction::Transfer {
         from: "sender".to_string(),
         to: "receiver".to_string(),
         amount: 10,
         signature,
     };
-    let pk_array: &[u8; 32] = pk.try_into().unwrap();
-    println!("Transfer valid? {}", verify_tx(&transfer, pk_array));
 
-    // New transfer
-    let new_transfer_data = Transaction::Transfer {
-        from: "sender".to_string(),
-        to: "receiver".to_string(),
-        amount: 20,
-        signature: Vec::new(),
-    };
-
-    let signature = sign_tx(&new_transfer_data, &keypair);
-
-    let new_transfer = Transaction::Transfer {
-        from: "sender".to_string(),
-        to: "receiver".to_string(),
-        amount: 20,
-        signature,
-    };
-
-    let pk_array: &[u8; 32] = pk.try_into().unwrap();
-    println!("Transfer valid? {}", verify_tx(&new_transfer, pk_array));
+    // Add block with tx.
+    if let Err(e) = chain.add_block(vec![transfer], 1) {
+        println!("Add failed: {}", e);
+    } else {
+        println!("Added block! Len: {}", chain.blocks.len()); // Should 2.
+        println!("Chain valid? {:?}", chain.validate());
+        println!("Last block txs: {:?}", chain.blocks[1].data);
+        println!("Last block in Chain: {:?}", chain.blocks.last());
+    }
 }
